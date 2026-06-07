@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>音訊前方加靜音並匯出 OGG</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #202331, #11131c); color: #f7f7fb; }
+    main { width: min(92vw, 620px); padding: 28px; border-radius: 24px; background: rgba(255,255,255,.08); box-shadow: 0 20px 60px rgba(0,0,0,.35); backdrop-filter: blur(16px); }
+    h1 { margin: 0 0 8px; font-size: 1.7rem; }
+    p { color: #d8d8e5; line-height: 1.6; }
+    label { display: block; margin: 18px 0 8px; font-weight: 700; }
+    input, select, button, a.button { width: 100%; box-sizing: border-box; border: 0; border-radius: 14px; padding: 13px 14px; font-size: 1rem; }
+    input, select { background: rgba(255,255,255,.95); color: #11131c; }
+    button, a.button { margin-top: 18px; background: #8fd3ff; color: #10131d; font-weight: 800; cursor: pointer; text-align: center; text-decoration: none; display: block; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .status { margin-top: 16px; padding: 14px; min-height: 48px; border-radius: 14px; background: rgba(0,0,0,.25); white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9rem; color: #e9f7ff; }
+    .hint { font-size: .9rem; color: #c8c8d4; }
+    @media (max-width: 520px) { .row { grid-template-columns: 1fr; } main { padding: 22px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>音訊前方加靜音 → OGG</h1>
+  <p>選一個音訊檔，設定開頭要塞幾秒空白，然後匯出成 <strong>.ogg</strong>。整個處理都在你的瀏覽器裡完成。</p>
+
+  <label for="audioFile">音訊檔</label>
+  <input id="audioFile" type="file" accept="audio/*" />
+
+  <div class="row">
+    <div>
+      <label for="seconds">開頭靜音秒數</label>
+      <input id="seconds" type="number" min="0" step="0.1" value="3" />
+    </div>
+    <div>
+      <label for="bitrate">OGG 音質</label>
+      <select id="bitrate">
+        <option value="96k">96 kbps 小檔</option>
+        <option value="128k" selected>128 kbps 標準</option>
+        <option value="192k">192 kbps 較高</option>
+        <option value="256k">256 kbps 很肥但香</option>
+      </select>
+    </div>
+  </div>
+
+  <button id="convertBtn">開始轉換</button>
+  <a id="downloadBtn" class="button" style="display:none">下載 OGG</a>
+  <div id="status" class="status">狀態：等你餵我音訊 🐣</div>
+  <p class="hint">第一次按轉換會下載 FFmpeg WebAssembly 核心，可能需要一點網路時間。iPhone 瀏覽器可能因記憶體限制不適合處理很大的音訊檔。</p>
+</main>
+
+<script type="module">
+  import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
+  import { fetchFile, toBlobURL } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js';
+
+  const audioFile = document.getElementById('audioFile');
+  const seconds = document.getElementById('seconds');
+  const bitrate = document.getElementById('bitrate');
+  const convertBtn = document.getElementById('convertBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const statusBox = document.getElementById('status');
+
+  const ffmpeg = new FFmpeg();
+  let loaded = false;
+
+  function setStatus(text) {
+    statusBox.textContent = text;
+  }
+
+  function safeName(name) {
+    return name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_') || 'audio';
+  }
+
+  async function loadFFmpeg() {
+    if (loaded) return;
+    setStatus('正在載入 FFmpeg 核心，大概像叫醒一台迷你錄音室…');
+
+    ffmpeg.on('log', ({ message }) => {
+      if (message) setStatus(message);
+    });
+
+    ffmpeg.on('progress', ({ progress }) => {
+      if (Number.isFinite(progress)) {
+        setStatus(`轉換中：${Math.max(0, Math.min(100, progress * 100)).toFixed(1)}%`);
+      }
+    });
+
+    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+    await ffmpeg.load({
+      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm')
+    });
+    loaded = true;
+  }
+
+  convertBtn.addEventListener('click', async () => {
+    const file = audioFile.files?.[0];
+    if (!file) {
+      alert('先選一個音訊檔啦 🎧');
+      return;
+    }
+
+    const silenceSec = Math.max(0, Number(seconds.value) || 0);
+    const delayMs = Math.round(silenceSec * 1000);
+    const inName = `input_${Date.now()}`;
+    const outName = `output_${Date.now()}.ogg`;
+
+    convertBtn.disabled = true;
+    downloadBtn.style.display = 'none';
+    downloadBtn.removeAttribute('href');
+
+    try {
+      await loadFFmpeg();
+      setStatus('讀取音訊中…');
+      await ffmpeg.writeFile(inName, await fetchFile(file));
+
+      setStatus(`加上 ${silenceSec} 秒靜音並轉成 OGG…`);
+      await ffmpeg.exec([
+        '-i', inName,
+        '-vn',
+        '-af', `adelay=${delayMs}:all=1`,
+        '-c:a', 'libopus',
+        '-b:a', bitrate.value,
+        outName
+      ]);
+
+      const data = await ffmpeg.readFile(outName);
+      const blob = new Blob([data.buffer], { type: 'audio/ogg' });
+      const url = URL.createObjectURL(blob);
+
+      downloadBtn.href = url;
+      downloadBtn.download = `${safeName(file.name)}_${silenceSec}s_silence.ogg`;
+      downloadBtn.style.display = 'block';
+      setStatus('完成！OGG 小精靈已裝瓶，可以下載了 🫙');
+
+      try { await ffmpeg.deleteFile(inName); } catch {}
+      try { await ffmpeg.deleteFile(outName); } catch {}
+    } catch (err) {
+      console.error(err);
+      setStatus('轉換失敗：' + (err?.message || err) + '\n\n建議：換小一點的檔案，或用 Android Firefox / Chrome 試試。');
+    } finally {
+      convertBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
