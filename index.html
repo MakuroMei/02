@@ -7,7 +7,7 @@
   <style>
     :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #202331, #11131c); color: #f7f7fb; }
-    main { width: min(92vw, 620px); padding: 28px; border-radius: 24px; background: rgba(255,255,255,.08); box-shadow: 0 20px 60px rgba(0,0,0,.35); backdrop-filter: blur(16px); }
+    main { width: min(92vw, 640px); padding: 28px; border-radius: 24px; background: rgba(255,255,255,.08); box-shadow: 0 20px 60px rgba(0,0,0,.35); backdrop-filter: blur(16px); }
     h1 { margin: 0 0 8px; font-size: 1.7rem; }
     p { color: #d8d8e5; line-height: 1.6; }
     label { display: block; margin: 18px 0 8px; font-weight: 700; }
@@ -16,7 +16,7 @@
     button, a.button { margin-top: 18px; background: #8fd3ff; color: #10131d; font-weight: 800; cursor: pointer; text-align: center; text-decoration: none; display: block; }
     button:disabled { opacity: .55; cursor: not-allowed; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .status { margin-top: 16px; padding: 14px; min-height: 48px; border-radius: 14px; background: rgba(0,0,0,.25); white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9rem; color: #e9f7ff; }
+    .status { margin-top: 16px; padding: 14px; min-height: 54px; border-radius: 14px; background: rgba(0,0,0,.25); white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9rem; color: #e9f7ff; }
     .hint { font-size: .9rem; color: #c8c8d4; }
     @media (max-width: 520px) { .row { grid-template-columns: 1fr; } main { padding: 22px; } }
   </style>
@@ -24,7 +24,7 @@
 <body>
 <main>
   <h1>音訊前方加靜音 → OGG</h1>
-  <p>選一個音訊檔，設定開頭要塞幾秒空白，然後匯出成 <strong>.ogg</strong>。整個處理都在你的瀏覽器裡完成。</p>
+  <p>選音訊檔，設定開頭靜音秒數，匯出成 <strong>.ogg</strong>。這版避開了 GitHub Pages 上容易爆炸的 ESM Worker 跨域問題。</p>
 
   <label for="audioFile">音訊檔</label>
   <input id="audioFile" type="file" accept="audio/*" />
@@ -48,13 +48,11 @@
   <button id="convertBtn">開始轉換</button>
   <a id="downloadBtn" class="button" style="display:none">下載 OGG</a>
   <div id="status" class="status">狀態：等你餵我音訊 🐣</div>
-  <p class="hint">第一次按轉換會下載 FFmpeg WebAssembly 核心，可能需要一點網路時間。iPhone 瀏覽器可能因記憶體限制不適合處理很大的音訊檔。</p>
+  <p class="hint">第一次會下載 FFmpeg WebAssembly 核心。手機可用，但大檔案可能讓瀏覽器開始冒煙。</p>
 </main>
 
-<script type="module">
-  import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
-  import { fetchFile, toBlobURL } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js';
-
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<script>
   const audioFile = document.getElementById('audioFile');
   const seconds = document.getElementById('seconds');
   const bitrate = document.getElementById('bitrate');
@@ -62,7 +60,22 @@
   const downloadBtn = document.getElementById('downloadBtn');
   const statusBox = document.getElementById('status');
 
-  const ffmpeg = new FFmpeg();
+  const { createFFmpeg, fetchFile } = FFmpeg;
+
+  const ffmpeg = createFFmpeg({
+    log: true,
+    corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+    progress: ({ ratio }) => {
+      if (Number.isFinite(ratio)) {
+        const pct = Math.max(0, Math.min(100, ratio * 100)).toFixed(1);
+        setStatus(`轉換中：${pct}%`);
+      }
+    },
+    logger: ({ message }) => {
+      if (message && /time=|size=|Opening|Output|Input/.test(message)) setStatus(message);
+    }
+  });
+
   let loaded = false;
 
   function setStatus(text) {
@@ -75,28 +88,13 @@
 
   async function loadFFmpeg() {
     if (loaded) return;
-    setStatus('正在載入 FFmpeg 核心，大概像叫醒一台迷你錄音室…');
-
-    ffmpeg.on('log', ({ message }) => {
-      if (message) setStatus(message);
-    });
-
-    ffmpeg.on('progress', ({ progress }) => {
-      if (Number.isFinite(progress)) {
-        setStatus(`轉換中：${Math.max(0, Math.min(100, progress * 100)).toFixed(1)}%`);
-      }
-    });
-
-    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm')
-    });
+    setStatus('正在載入 FFmpeg 核心，迷你音訊工廠開機中…');
+    await ffmpeg.load();
     loaded = true;
   }
 
   convertBtn.addEventListener('click', async () => {
-    const file = audioFile.files?.[0];
+    const file = audioFile.files && audioFile.files[0];
     if (!file) {
       alert('先選一個音訊檔啦 🎧');
       return;
@@ -104,8 +102,8 @@
 
     const silenceSec = Math.max(0, Number(seconds.value) || 0);
     const delayMs = Math.round(silenceSec * 1000);
-    const inName = `input_${Date.now()}`;
-    const outName = `output_${Date.now()}.ogg`;
+    const inName = 'input_' + Date.now();
+    const outName = 'output_' + Date.now() + '.ogg';
 
     convertBtn.disabled = true;
     downloadBtn.style.display = 'none';
@@ -114,32 +112,32 @@
     try {
       await loadFFmpeg();
       setStatus('讀取音訊中…');
-      await ffmpeg.writeFile(inName, await fetchFile(file));
+      ffmpeg.FS('writeFile', inName, await fetchFile(file));
 
       setStatus(`加上 ${silenceSec} 秒靜音並轉成 OGG…`);
-      await ffmpeg.exec([
+      await ffmpeg.run(
         '-i', inName,
         '-vn',
         '-af', `adelay=${delayMs}:all=1`,
         '-c:a', 'libopus',
         '-b:a', bitrate.value,
         outName
-      ]);
+      );
 
-      const data = await ffmpeg.readFile(outName);
+      const data = ffmpeg.FS('readFile', outName);
       const blob = new Blob([data.buffer], { type: 'audio/ogg' });
       const url = URL.createObjectURL(blob);
 
       downloadBtn.href = url;
       downloadBtn.download = `${safeName(file.name)}_${silenceSec}s_silence.ogg`;
       downloadBtn.style.display = 'block';
-      setStatus('完成！OGG 小精靈已裝瓶，可以下載了 🫙');
+      setStatus('完成！OGG 已裝瓶，可以下載了 🫙');
 
-      try { await ffmpeg.deleteFile(inName); } catch {}
-      try { await ffmpeg.deleteFile(outName); } catch {}
+      try { ffmpeg.FS('unlink', inName); } catch (e) {}
+      try { ffmpeg.FS('unlink', outName); } catch (e) {}
     } catch (err) {
       console.error(err);
-      setStatus('轉換失敗：' + (err?.message || err) + '\n\n建議：換小一點的檔案，或用 Android Firefox / Chrome 試試。');
+      setStatus('轉換失敗：' + (err && err.message ? err.message : err) + '\n\n建議：換小一點的檔案，或用 Android Firefox / Chrome 試試。');
     } finally {
       convertBtn.disabled = false;
     }
